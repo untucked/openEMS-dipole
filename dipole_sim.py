@@ -32,8 +32,9 @@ style.use('ggplot')
 
 
 show_xml = True
-include_gnd = False
-
+include_gnd = True
+output_3d = True
+plot_3d = True
 ### General parameter setup
 sim_dir = OPENEMS_SIM_OUTPUT_PATH
 data_dir = os.path.join(OPENEMS_DATA_OUTPUT_PATH, 'dipole_sim')
@@ -80,7 +81,7 @@ def run_dipole_sim(dipole_length=150):
     #   - NrTS: maximum timesteps
     #   - EndCriteria: stop when |ΔE/E| drops below 1e‑4 (~‑40 dB)
     #   - Gaussian pulse centered at f0 with bandwidth fc
-    FDTD = openEMS(NrTS=15000, EndCriteria=1e-3) # FDTD = openEMS(NrTS=30000, EndCriteria=1e-4)
+    FDTD = openEMS(NrTS=30000, EndCriteria=1e-4) # FDTD = openEMS(NrTS=30000, EndCriteria=1e-4)
     FDTD.SetGaussExcite( f0, fc )
     # Mur absorbing boundaries on all six sides (good for dipole in free space)
     FDTD.SetBoundaryCond(['MUR'] * 6)
@@ -147,15 +148,16 @@ def run_dipole_sim(dipole_length=150):
     )
 
     if include_gnd:
-        gnd_size = 300  # in mm
-        gnd_offset = lambda0_mm / 2  # ≈ 75 mm
+        gnd_size = air_padding  # in mm
+        gnd_offset = lambda0_mm / 2 
+        print('Ground plane offset:', gnd_offset, ' mm')
         gnd_y = -gnd_offset
         mesh.AddLine('y', [gnd_y])  # align Yee grid
 
         gnd = CSX.AddMetal('gnd_plane')
         gnd.AddBox(
-            [-gnd_size/2, gnd_y, -gnd_size/2],   # [X_start, Y, Z_start]
-            [ gnd_size/2, gnd_y,  gnd_size/2]    # [X_stop,  Y, Z_stop]
+            [-gnd_size, gnd_y, -gnd_size],   # [X_start, Y, Z_start]
+            [ gnd_size, gnd_y,  gnd_size]    # [X_stop,  Y, Z_stop]
         )
 
     FDTD.AddEdges2Grid(
@@ -221,8 +223,6 @@ def run_dipole_sim(dipole_length=150):
     FDTD.Run(Sim_Path, verbose=3, cleanup=True)
     export_vtk.export_E_to_vtk(Sim_Path)
 
-
-
     ### Post-processing and plotting
     f = np.linspace(max(0.5e9,f0-fc),f0+fc,401)
     port.CalcPort(Sim_Path, f)
@@ -231,7 +231,7 @@ def run_dipole_sim(dipole_length=150):
     idx = np.argmin(s11_dB)
     f_res = f[idx]
     print('Length: {} mm'.format(dipole_length))
-    print('Resonant frequency: {} GHz'.format(f_res/1e9))   
+    print('Resonant frequency: {} MHz'.format(f_res/1e6))   
     # output the length and resonant frequency to file
     
     figure()
@@ -239,12 +239,28 @@ def run_dipole_sim(dipole_length=150):
     legend()
     ylabel('S-Parameter (dB)')
     xlabel('Frequency (GHz)')
-    title('Dipole Antenna S11\nResonant frequency: {} GHz'.format(f_res/1e9))
+    title('Dipole Antenna S11\nFres: {} MHz'.format(f_res/1e6))
     savefig(os.path.join(save_img_path, 'Dipole_S11.png'))
     tight_layout()  
+
+    Zin = port.uf_tot/port.if_tot
+    Z_res = Zin[idx]
+    title_val = f"Zin at resonance: {Z_res.real:.2f} + j{Z_res.imag:.2f} Ohm"
+    print(title_val)
+
+    figure()
+    plot(f/1e9, np.real(Zin), 'k-', linewidth=2, label='$\Re\{Z_{in}\}$')
+    plot(f/1e9, np.imag(Zin), 'r--', linewidth=2, label='$\Im\{Z_{in}\}$')
+    legend()
+    ylabel('Zin (Ohm)')
+    xlabel('Frequency (GHz)')
+    title(f'Dipole Antenna Input Impedance\n{title_val}')
+    savefig(os.path.join(save_img_path, 'Simp_Patch_Antenna.png'))
+    tight_layout()
     
-    theta = np.arange(-180.0, 180.0, 2.0)
-    phi   = [0., 90.]
+    theta = np.arange(-180, 180.0+1, 1.0)
+    # phi   = [0., 90.]
+    phi   = np.arange(-180.0, 180.0+1, 1) 
     # The NF2FF transform applies an integral over a surface enclosing the antenna to compute the far-field:
     nf2ff_res = nf2ff.CalcNF2FF(Sim_Path, f_res, theta, phi, center=[0,0,1e-3])    
     # converts the normalized far-field magnitude into directivity in dBi,
@@ -261,18 +277,23 @@ def run_dipole_sim(dipole_length=150):
         file_write.write(f"{dipole_length}mm -> {f_res/1e6:.4f}\t{efficiency:.2f}\t{realized_gain:.2f}\n") 
 
     theta_rad = np.radians(theta)
+    phi_rad = np.radians(phi)
+    phi_index_0 = np.where(phi == 0.0)[0][0]  # Find the correct index for phi = 90°
+    phi_index_90 = np.where(phi == 90.0)[0][0]  # Find the correct index for phi = 90°
+
     figure()
+    added_title_val = f"Fres: {f_res/1e9:.2f} GHz, Eff: {efficiency:.2f}%, Gain: {realized_gain:.2f} dBi"
     # --- Plot phi = 0 (XZ-plane) ---
     ax1 = subplot(1, 1, 1, polar=True)
-    ax1.plot(theta_rad, np.squeeze(E_norm[:, 0]), 'k-', linewidth=2, label='phi = 0° (XZ)')
-    ax1.set_title(f'Directivity Pattern (phi = 0°)\nFreq: {f_res/1e9:.2f} GHz')
+    ax1.plot(theta_rad, np.squeeze(E_norm[:, phi_index_0]), 'k-', linewidth=2, label='phi=0°')
+    ax1.set_title(f'Azimuth Pattern, H-Field  (phi = 0°)\n{added_title_val}')
     ax1.set_theta_zero_location("N")
     ax1.set_theta_direction(-1)
     ax1.set_rlim(bottom=np.min(E_norm)-3, top=np.max(E_norm)+3)
     ax1.legend(loc='lower right')
     # Annotate the maximum value for phi = 0
-    max_val_phi0 = np.max(np.squeeze(E_norm[:, 0]))
-    max_idx_phi0 = np.argmax(np.squeeze(E_norm[:, 0]))
+    max_val_phi0 = np.max(np.squeeze(E_norm[:, phi_index_0]))
+    max_idx_phi0 = np.argmax(np.squeeze(E_norm[:, phi_index_0]))
     max_theta_rad_phi0 = theta_rad[max_idx_phi0]
     ax1.annotate(f'{max_val_phi0:.2f} dBi',
                  xy=(max_theta_rad_phi0, max_val_phi0),
@@ -282,19 +303,19 @@ def run_dipole_sim(dipole_length=150):
                  horizontalalignment='center',
                  verticalalignment='bottom')
     tight_layout()
-    savefig(os.path.join(save_img_path, 'Directivity_phi_0.png'))
+    savefig(os.path.join(save_img_path, 'Azimuth_phi0.png'))
     # --- Plot phi = 90 (YZ-plane) ---
     figure()
     ax2 = plt.subplot(1, 1, 1, polar=True)
-    ax2.plot(theta_rad, np.squeeze(E_norm[:, 1]), 'r--', linewidth=2, label='phi = 90° (YZ)')
-    ax2.set_title(f'Directivity Pattern (phi = 90°)\nFreq: {f_res/1e9:.2f} GHz')
+    ax2.plot(theta_rad, np.squeeze(E_norm[:, phi_index_90]), 'r--', linewidth=2, label='phi = 90°')
+    ax2.set_title(f'Azimuth Pattern, H-Field (phi = 90°)\n{added_title_val}')
     ax2.set_theta_zero_location("N")
     ax2.set_theta_direction(-1)
     ax2.set_rlim(bottom=np.min(E_norm)-3, top=np.max(E_norm)+3)
     ax2.legend(loc='lower right')
     # Annotate the maximum value for phi = 90
-    max_val_phi90 = np.max(np.squeeze(E_norm[:, 1]))
-    max_idx_phi90 = np.argmax(np.squeeze(E_norm[:, 1]))
+    max_val_phi90 = np.max(np.squeeze(E_norm[:, phi_index_90]))
+    max_idx_phi90 = np.argmax(np.squeeze(E_norm[:, phi_index_90]))
     max_theta_rad_phi90 = theta_rad[max_idx_phi90]
     ax2.annotate(f'{max_val_phi90:.2f} dBi',
                  xy=(max_theta_rad_phi90, max_val_phi90),
@@ -304,27 +325,88 @@ def run_dipole_sim(dipole_length=150):
                  horizontalalignment='center',
                  verticalalignment='bottom')
     tight_layout()
-    savefig(os.path.join(save_img_path, 'Directivity_phi_90.png'))
+    savefig(os.path.join(save_img_path, 'Azimuth_phi90.png'))
 
-    Zin = port.uf_tot/port.if_tot
-    Z_res = Zin[idx]
-    title_val = f"Zin at resonance: {Z_res.real:.2f} + j{Z_res.imag:.2f} Ohm"
-    print(title_val)
+    # θ = 90° → horizontal cut (H-plane)
+    theta_idx_90 = np.argmin(np.abs(theta - 90))
+    E_theta_90 = np.squeeze(E_norm[theta_idx_90, :])  # E(φ) at θ = 90°
+    phi_rad = np.radians(phi)
 
     figure()
-    plot(f/1e9, np.real(Zin), 'k-', linewidth=2, label='$\Re\{Z_{in}\}$')
-    plot(f/1e9, np.imag(Zin), 'r--', linewidth=2, label='$\Im\{Z_{in}\}$')
-    legend()
-    ylabel('Zin (Ohm)')
-    xlabel('Frequency (GHz)')
-    title(f'Dipole Antenna Input Impedance\n{title_val}')
-    savefig(os.path.join(save_img_path, 'Simp_Patch_Antenna.png'))
+    ax = plt.subplot(1, 1, 1, polar=True)
+    ax.plot(phi_rad, E_theta_90, 'b-', linewidth=2, label='θ = 90°')
+    ax.set_title(f'Elevation Pattern, E-plane (θ = 90°)\n{added_title_val}')
+    ax.set_theta_zero_location("N")
+    ax.set_theta_direction(-1)
+    ax.set_rlim(bottom=np.min(E_theta_90)-3, top=np.max(E_theta_90)+3)
+    ax.legend(loc='lower right')
+
+    # Annotate max
+    max_val_phi = np.max(E_theta_90)
+    max_idx_phi = np.argmax(E_theta_90)
+    max_phi_rad = phi_rad[max_idx_phi]
+    ax.annotate(f'{max_val_phi:.2f} dBi',
+                xy=(max_phi_rad, max_val_phi),
+                xytext=(max_phi_rad + np.pi/8, max_val_phi + 5),
+                arrowprops=dict(facecolor='black', shrink=0.05, width=1, headwidth=3, headlength=5),
+                fontsize=10,
+                horizontalalignment='center',
+                verticalalignment='bottom')
+
     tight_layout()
-    return Sim_Path
+    plt.savefig(os.path.join(save_img_path, 'Azimuthal_theta90.png'), dpi=300)
+    theta_idx_0 = np.argmin(np.abs(theta - 0))
+    E_theta_0 = np.squeeze(E_norm[theta_idx_0, :])
+
+    figure()
+    ax = plt.subplot(1, 1, 1, polar=True)
+    ax.plot(phi_rad, E_theta_0, 'g--', linewidth=2, label='θ = 0°')
+    ax.set_title(f'Azimuthal Pattern, E-plane (θ = 0°)\n{added_title_val}')
+    ax.set_theta_zero_location("N")
+    ax.set_theta_direction(-1)
+    ax.set_rlim(bottom=np.min(E_theta_0)-3, top=np.max(E_theta_0)+3)
+    ax.legend(loc='lower right')
+    tight_layout()
+    plt.savefig(os.path.join(save_img_path, 'Azimuthal_theta0.png'), dpi=300)
+
+    # list all the phi values with max values
+    #initialize the csv file
+    with open(os.path.join(save_img_path, 'max_values.csv'), 'w') as file_write:
+        file_write.write('phi,max_value,max_theta\n')
+    for i, phi_val in enumerate(phi):
+        E_phi = np.squeeze(E_norm[:, i])
+        max_val = np.max(E_phi)
+        max_idx = np.argmax(E_phi)
+        max_theta = theta[max_idx]
+        # Find -3 dB points
+        half_power_level = max_val - 3.0
+        above_half_power = np.where(E_phi >= half_power_level)[0]
+        if len(above_half_power) >= 2:
+            # HPBW is the angular distance between first and last above -3 dB
+            hpbw = theta[above_half_power[-1]] - theta[above_half_power[0]]
+        else:
+            hpbw = 0.0  # Fallback if beam is too narrow or clipped
+
+        print(f"phi = {phi_val:.1f}°: max = {max_val:.2f} dBi at theta = {max_theta:.1f}°, HPBW = {hpbw:.1f}°")
+        with open(os.path.join(save_img_path, 'max_values.csv'), 'a') as file_write:
+            file_write.write(f"{phi_val:.1f},{max_val:.2f},{max_theta:.1f},{hpbw:.1f}\n")
+    # Save the full far-field data for postprocessing
+    np.savez(os.path.join(save_img_path, 'far_field_data.npz'),
+            E_norm=E_norm,
+            theta=theta,
+            phi=phi,
+            f_res=f_res)
+
+    
+    return Sim_Path, save_img_path
 
 
 if __name__ == "__main__":
-    Sim_Path = run_dipole_sim(dipole_length=150)
-    # export_vtk.write_pvd_wrapper(Sim_Path)
+    Sim_Path, save_img_path = run_dipole_sim(dipole_length=150)
+    if output_3d:
+        export_vtk.write_pvd_wrapper(Sim_Path)
+    if plot_3d:
+        # save_img_path = os.path.join(data_dir, '150mm')
+        export_vtk.far_field_data_npz(np.load(os.path.join(save_img_path, 'far_field_data.npz')), save_img_path)
     # for dipole_length in np.arange(130, 151, 10):
     #     run_dipole_sim(dipole_length=dipole_length)

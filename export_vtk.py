@@ -2,6 +2,8 @@ import h5py
 import meshio
 import os
 import numpy as np
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 
 def export_E_to_vtk(h5_path, vtk_path_prefix='Efield_XY'):
     h5_file = os.path.join(h5_path, f'{vtk_path_prefix}.h5')
@@ -59,3 +61,69 @@ def write_pvd_wrapper(vtr_folder, output_filename="Efield_XY.pvd", timestep_fs=6
         f.write('</VTKFile>\n')
     
     print(f"[✔] Wrote PVD file: {output_path}")
+
+
+def far_field_data_npz(data, save_img_path):
+    # Convert to arrays
+    theta_deg = np.array(data['theta'])  # e.g. -180 to 180
+    phi_deg = np.array(data['phi'])
+    # Define cut limits
+    theta_min, theta_max = 0, 180
+    phi_min, phi_max = 0, 90
+    # Get index ranges
+    theta_idx = np.where((theta_deg >= theta_min) & (theta_deg <= theta_max))[0]
+    phi_idx = np.where((phi_deg >= phi_min) & (phi_deg <= phi_max))[0]
+
+    E_dBi = data['E_norm'][np.ix_(theta_idx, phi_idx)]
+    theta_deg = theta_deg[theta_idx]
+    phi_deg = phi_deg[phi_idx]
+    theta = np.radians(theta_deg)
+    phi = np.radians(phi_deg)
+    f_res = data['f_res']
+
+    # Meshgrid for 3D spherical coordinate transformation
+    THETA, PHI = np.meshgrid(theta, phi, indexing='ij')
+    R = E_dBi
+    D_dBi = E_dBi
+
+    # Subsample for faster plotting
+    step_theta = 10  # plot every 2nd point in theta
+    step_phi = 10    # plot every 2nd point in phi
+
+    THETA_sub = THETA[::step_theta, ::step_phi]
+    PHI_sub   = PHI[::step_theta, ::step_phi]
+    R_sub     = R[::step_theta, ::step_phi]
+    D_sub     = D_dBi[::step_theta, ::step_phi]
+    # Clip dBi for color (floor = max - 20 dB)
+    max_gain = np.max(D_sub)
+    min_threshold = max_gain - 20
+    D_clipped = np.clip(D_sub, min_threshold, max_gain)
+    # Normalize color
+    norm = plt.Normalize(vmin=min_threshold, vmax=max_gain)
+    colors = plt.cm.jet(norm(D_clipped))
+
+    # Spherical → Cartesian
+    X = R_sub * np.sin(THETA_sub) * np.cos(PHI_sub)
+    Y = R_sub * np.sin(THETA_sub) * np.sin(PHI_sub)
+    Z = R_sub * np.cos(THETA_sub)
+
+    # Color normalization
+    norm = plt.Normalize(vmin=min_threshold, vmax=max_gain)
+    colors = plt.cm.jet(norm(D_clipped))
+     # Plot
+    fig = plt.figure(figsize=(10, 7))
+    ax = fig.add_subplot(111, projection='3d')
+    surf = ax.plot_surface(X, Y, Z, facecolors=colors,
+                           rstride=1, cstride=1,
+                           linewidth=0, antialiased=False, alpha=0.95)
+    ax.set_title(f'3D Far-Field Pattern @ {f_res/1e9:.2f} GHz')
+    ax.set_box_aspect([1,1,1])  # equal scaling
+
+    # Colorbar
+    mappable = plt.cm.ScalarMappable(cmap='jet', norm=norm)
+    mappable.set_array([])
+    fig.colorbar(mappable, ax=ax, shrink=0.6, aspect=10, label='Directivity (dBi)')
+
+    # Save & show
+    plt.savefig(os.path.join(save_img_path, "dipole_3D_gain.png"), dpi=300)
+    plt.show()

@@ -1,4 +1,4 @@
-# Retirement App
+# Open EMS Dipole
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)
@@ -25,13 +25,14 @@
 
 ## Dependencies 
 ----------------------------
-$ python -m spacy download en_core_web_sm
+open EMS
+ParaView
 
 ## GIT
 ----------------------------
 git init
 git add .
-git commit -m "Initial working Flask backend for retirement calculator"
+git commit -m "openEMS-dipole"
 git branch -M main
-git remote add origin https://github.com/untucked/retirementApp_wChat.git
+git remote add origin https://github.com/untucked/openEMS-dipole.git
 git push -u origin main
