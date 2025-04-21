@@ -30,27 +30,27 @@ from CSXCAD import AppCSXCAD_BIN
 import export_vtk as export_vtk
 style.use('ggplot')
 
-
 show_xml = True
 include_gnd = True
 output_3d = True
 plot_3d = True
+fast_sim=True
 ### General parameter setup
 sim_dir = OPENEMS_SIM_OUTPUT_PATH
 data_dir = os.path.join(OPENEMS_DATA_OUTPUT_PATH, 'dipole_sim')
 if not os.path.exists(data_dir):
     os.makedirs(data_dir)
-master_log_path = os.path.join(data_dir, 'resonance_v1.txt')
+master_log_path = os.path.join(data_dir, 'resonance_gnd.txt')
 if not os.path.exists(master_log_path):
     with open(master_log_path, 'w') as file_write:
-        file_write.write('Length (mm), Resonant frequency (MHz), Efficiency (%), Realized Gain (dBi)\n')
+        file_write.write('Length (mm), Resonant frequency (MHz), Efficiency (%), Realized Gain (dBi), GND Distance (mm), GND Cond (%)\n')
     print('Created master log file:', master_log_path)
 
-def run_dipole_sim(dipole_length=150):
-    Sim_Path = os.path.join(sim_dir, f'SimData_Dipole_L{dipole_length}mm')
+def run_dipole_sim(dipole_length=150, gnd_percent=100):
+    Sim_Path = os.path.join(sim_dir, f'SimData_Dipole_L{dipole_length}mm_GND{int(gnd_percent)}')
     if not os.path.exists(Sim_Path):
         os.makedirs(Sim_Path)
-    save_img_path = os.path.join(data_dir, f'{dipole_length}mm')
+    save_img_path = os.path.join(data_dir, f'{dipole_length}mm_{gnd_percent}')
     if not os.path.exists(save_img_path):
         os.makedirs(save_img_path)
     # ─── Dipole geometry (all lengths in mm) ──────────────────────────────────────
@@ -76,12 +76,14 @@ def run_dipole_sim(dipole_length=150):
                    dipole_length + 2*air_padding])
     # 4) FDTD setup
     # setup FDTD parameter & excitation function
-    
-
     #   - NrTS: maximum timesteps
     #   - EndCriteria: stop when |ΔE/E| drops below 1e‑4 (~‑40 dB)
     #   - Gaussian pulse centered at f0 with bandwidth fc
-    FDTD = openEMS(NrTS=15000, EndCriteria=1e-3) # FDTD = openEMS(NrTS=30000, EndCriteria=1e-4) , openEMS(NrTS=15000, EndCriteria=1e-3)
+    if fast_sim:
+        # fast simulation with 1/10 of the time steps
+        FDTD = openEMS(NrTS=15000, EndCriteria=1e-3)
+    else:
+        FDTD = openEMS(NrTS=30000, EndCriteria=1e-4) # FDTD = openEMS(NrTS=30000, EndCriteria=1e-4)
     FDTD.SetGaussExcite( f0, fc )
     # Mur absorbing boundaries on all six sides (good for dipole in free space)
     FDTD.SetBoundaryCond(['MUR'] * 6)
@@ -108,6 +110,7 @@ def run_dipole_sim(dipole_length=150):
     # combine, sort & uniquify
     xlin = np.unique(np.hstack((x1, x2, x3)))
     mesh.AddLine('x', xlin)
+
     # Y-direction mesh
     y_fine = np.linspace(-radius*3, radius*3, 7)  # 7 points → ~0.5 mm spacing
     y_coarse_neg = np.linspace(-dipole_length, -radius*3, 20)
@@ -140,12 +143,38 @@ def run_dipole_sim(dipole_length=150):
     )
     if include_gnd:
         gnd_size = air_padding  # in mm
-        gnd_offset = 2 # mm;   lambda0_mm / 30
-        print('***** Ground plane offset:', gnd_offset, ' mm')
+        gnd_offset = radius + 2 # in mm;  lambda0_mm / 2 
+        print('*** Ground plane offset:', gnd_offset, ' mm')
         gnd_y = -gnd_offset
         mesh.AddLine('y', [gnd_y])  # align Yee grid
+        # Add finite conductivity ground plane
+        copper_conductivity = 5.8e7  # S/m
+        per_cu = gnd_percent / 100.0  # convert to fraction
+        gnd_conductivity = copper_conductivity * per_cu  # S/m
+        print('*** Ground plane conductivity:', gnd_conductivity, ' S/m')
+        gnd_thickness = 0.01 # mm
+        if gnd_conductivity <= 0:
+            gnd_conductivity=1
+        Rs = 1 / (gnd_conductivity * gnd_thickness)
+        print(f"*** Surface resistance Rs = {Rs:.3f} Ω/sq")
+        AddConductingSheet=False
+        AddMetalGndPlane=False
+        AddMaterial=True
+        if gnd_conductivity > 1e7:
+            AddMetalGndPlane=True
+        if AddConductingSheet:
+            gnd = CSX.AddConductingSheet('gnd_plane')
+            gnd.SetConductivity(gnd_conductivity)
+            gnd.SetThickness(gnd_thickness)
+        elif AddMetalGndPlane:
+            gnd = CSX.AddMetal('gnd_plane')
+        elif AddMaterial:
+            gnd = CSX.AddMaterial('gnd_plane')
+            gnd.SetMaterialProperty(epsilon=1.0, kappa=gnd_conductivity)
+        else :
+            gnd = CSX.AddMetal('gnd_plane')
 
-        gnd = CSX.AddMetal('gnd_plane')
+        # gnd = CSX.AddMetal('gnd_plane')
         gnd.AddBox(
             [-gnd_size, gnd_y, -gnd_size],   # [X_start, Y, Z_start]
             [ gnd_size, gnd_y,  gnd_size]    # [X_stop,  Y, Z_stop]
@@ -175,33 +204,26 @@ def run_dipole_sim(dipole_length=150):
         priority=5,
         edges2grid='x' # Specify the direction for edge integration
     )
-
     # 8) Optional: NF2FF box
     mesh.SmoothMeshLines('all', mesh_res, 1.3)
     # Add the nf2ff recording box
     nf2ff = FDTD.CreateNF2FFBox()
-
     # Add a visualization-only dielectric at the port location (1mm wide box)
     debug_vis = CSX.AddMaterial('port_debug')
     debug_vis.SetMaterialProperty(epsilon=1.0) 
     debug_vis.AddBox([-gap/2, -radius, -radius], [gap/2, radius, radius])
     debug_vis.SetColor('#FF0000', 230)  # Red with 90% opacity (255*0.9≈230)
-
     ### Run the simulation
     CSX_file = os.path.join(save_img_path, 'simp_patch.xml')
     CSX.Write2XML(CSX_file)
-
     if show_xml:
         os.system(AppCSXCAD_BIN + ' "{}"'.format(CSX_file))
-
-    # Export E-field vector data in the X–Y plane at Z=0
-    
+    # Export E-field vector data in the X–Y plane at Z=0    
     dump_E = CSX.AddDump('Efield_XY')
     dump_E.SetDumpType(0)             # 0 = 2D slice
     dump_E.SetDumpMode(0)             # 0 = vector field
     dump_E.SetNormalDir(2)   # Plane normal axis = Z (0=x, 1=y, 2=z)
-    dump_E.AddAttribute('Refinement', str(0.0)) # Convert float to string
-    
+    dump_E.AddAttribute('Refinement', str(0.0)) # Convert float to string    
 
     # Define the spatial region for the dump (XY plane at Z=0)
     dump_size = max(SimBox)  # Make the dump region cover the simulation area in XY
@@ -226,10 +248,10 @@ def run_dipole_sim(dipole_length=150):
     # output the length and resonant frequency to file
     
     figure()
-    plot(f/1e9, s11_dB, 'k-', linewidth=2, label='$S_{11}$')
+    plot(f/1e6, s11_dB, 'k-', linewidth=2, label='$S_{11}$')
     legend()
     ylabel('S-Parameter (dB)')
-    xlabel('Frequency (GHz)')
+    xlabel('Frequency (MHz)')
     title('Dipole Antenna S11\nFres: {} MHz'.format(f_res/1e6))
     savefig(os.path.join(save_img_path, 'Dipole_S11.png'))
     tight_layout()  
@@ -240,11 +262,11 @@ def run_dipole_sim(dipole_length=150):
     print(title_val)
 
     figure()
-    plot(f/1e9, np.real(Zin), 'k-', linewidth=2, label='$\Re\{Z_{in}\}$')
-    plot(f/1e9, np.imag(Zin), 'r--', linewidth=2, label='$\Im\{Z_{in}\}$')
+    plot(f/1e6, np.real(Zin), 'k-', linewidth=2, label='$\Re\{Z_{in}\}$')
+    plot(f/1e6, np.imag(Zin), 'r--', linewidth=2, label='$\Im\{Z_{in}\}$')
     legend()
     ylabel('Zin (Ohm)')
-    xlabel('Frequency (GHz)')
+    xlabel('Frequency (MHz)')
     title(f'Dipole Antenna Input Impedance\n{title_val}')
     savefig(os.path.join(save_img_path, 'Simp_Patch_Antenna.png'))
     tight_layout()
@@ -265,7 +287,7 @@ def run_dipole_sim(dipole_length=150):
     print(f"Realized Gain = {realized_gain:.2f} dBi")
 
     with open(master_log_path, 'a') as file_write:
-        file_write.write(f"{dipole_length}mm -> {f_res/1e6:.4f}\t{efficiency:.2f}\t{realized_gain:.2f}\n") 
+        file_write.write(f"{dipole_length:.1f},{f_res/1e6:.4f},{efficiency:.2f},{realized_gain:.2f},{gnd_offset:.2f},{gnd_percent:.1f}\n")
 
     theta_rad = np.radians(theta)
     phi_rad = np.radians(phi)
@@ -393,12 +415,14 @@ def run_dipole_sim(dipole_length=150):
 
 
 if __name__ == "__main__":
-    Sim_Path, save_img_path = run_dipole_sim(dipole_length=150)
+    gnd_percents = np.arange(0, 10, 2)
+    gnd_percents = np.concatenate((gnd_percents, np.arange(10, 20, 5)))
+    gnd_percents = np.concatenate((gnd_percents, np.arange(20, 101, 20)))
+    gnd_percents = [50]
+    for gnd_percent in gnd_percents:
+        Sim_Path, save_img_path = run_dipole_sim(dipole_length=150, gnd_percent=gnd_percent)
     if output_3d:
         export_vtk.write_pvd_wrapper(Sim_Path)
     if plot_3d:
         # save_img_path = os.path.join(data_dir, '150mm')
         export_vtk.far_field_data_npz(np.load(os.path.join(save_img_path, 'far_field_data.npz')), save_img_path)
-    # for dipole_length in np.arange(130, 151, 10):
-    #     run_dipole_sim(dipole_length=dipole_length)
-    print(save_img_path)

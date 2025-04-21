@@ -9,7 +9,7 @@ def export_E_to_vtk(h5_path, vtk_path_prefix='Efield_XY'):
     h5_file = os.path.join(h5_path, f'{vtk_path_prefix}.h5')
     if not os.path.isfile(h5_file):
         print(f"[!] HDF5 dump not found: {h5_file}")
-        return
+        return 0
 
     with h5py.File(h5_file, 'r') as f:
         coords = np.array(f['Grid'])
@@ -35,6 +35,7 @@ def export_E_to_vtk(h5_path, vtk_path_prefix='Efield_XY'):
         vtk_file = os.path.join(h5_path, f"{vtk_path_prefix}.vtk")
         meshio.write(vtk_file, mesh)
         print(f"[✔] Exported: {vtk_file}")
+        return 1
 
 def write_pvd_wrapper(vtr_folder, output_filename="Efield_XY.pvd", timestep_fs=60):
     """
@@ -126,4 +127,3 @@ def far_field_data_npz(data, save_img_path):
 
     # Save & show
     plt.savefig(os.path.join(save_img_path, "dipole_3D_gain.png"), dpi=300)
-    plt.show()
